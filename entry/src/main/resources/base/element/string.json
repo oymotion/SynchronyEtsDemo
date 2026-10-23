@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Sensor SDK ArkTS demo"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "SensorEtsDemo main ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "SensorEtsDemo"
+    },
+    {
+      "name": "reason_access_bluetooth",
+      "value": "Used to scan, connect and stream data from Bluetooth sensor devices."
+    }
+  ]
+}

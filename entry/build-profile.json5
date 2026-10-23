@@ -1,0 +1,25 @@
+{
+  "apiType": "stageMode",
+  "buildOption": {
+    "sourceOption": {
+      "workers": [
+        "./src/main/ets/workers/DspWorker.ets"
+      ]
+    }
+  },
+  "buildOptionSet": [
+    {
+      "name": "debug",
+      "debuggable": true
+    },
+    {
+      "name": "release",
+      "debuggable": false
+    }
+  ],
+  "targets": [
+    {
+      "name": "default"
+    }
+  ]
+}

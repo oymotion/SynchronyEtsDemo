@@ -1,0 +1,11 @@
+{
+  "modelVersion": "6.26.4",
+  "name": "sensoretsdemo",
+  "version": "1.0.0",
+  "description": "Sensor SDK HarmonyOS ArkTS demo",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {},
+  "devDependencies": {}
+}
