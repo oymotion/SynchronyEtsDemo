@@ -9,8 +9,9 @@ import { drawCube } from './QuaternionCube';
 import { LiveFilter } from '../dsp/LiveFilter';
 import { computeSpectrum, SpectrumResult } from '../dsp/SpectrumCompute';
 import fs from '@ohos.file.fs';
+import { waitForSdkBootstrap } from '../entryability/EntryAbility';
 
-const DEMO_VERSION: string = '0.2.27';
+const DEMO_VERSION: string = '0.2.36';
 const SCAN_PERIOD_MS: number = 5000;
 const OP_TIMEOUT_MS: number = 0;
 const BATTERY_REFRESH_MS: number = 60000;
@@ -23,7 +24,7 @@ const SPECTRUM_INTERVAL_MS: number = 200;
 const RELAX_PLOT_TYPE: number = -1;
 
 const NTF_KEYS: string[] = ['NTF_EEG', 'NTF_IMPEDANCE', 'NTF_EMG', 'NTF_GEST', 'NTF_PPG', 'NTF_SPO2',
-  'NTF_IMU', 'NTF_MAG_ANGLE'];
+  'NTF_IMU', 'NTF_ANGLE'];
 const NTF_LABELS: string[] = ['EEG', 'IMPE', 'EMG', 'GESTURE', 'PPG', 'SpO2', 'IMU', 'Angle'];
 const FILTER_KEYS: string[] = ['FILTER_50HZ', 'FILTER_60HZ', 'FILTER_HPF', 'FILTER_LPF'];
 const FILTER_LABELS: string[] = ['50Hz', '60Hz', 'HPF', 'LPF'];
@@ -47,6 +48,7 @@ interface ImuStreamDef {
   label: string;
   labels: string[];
   range: number[];
+  unit: string;
 }
 
 interface RateDef {
@@ -67,7 +69,8 @@ const RATE_LABEL_ORDER: RateLabel[] = [
   { type: DataType.NTF_GYRO, label: 'GYRO' },
   { type: DataType.NTF_EULER, label: 'EULER' },
   { type: DataType.NTF_QUATERNION, label: 'QUAT' },
-  { type: DataType.NTF_MAG_ANGLE, label: 'Angle' }
+  { type: DataType.NTF_MAG, label: 'MAG' },
+  { type: DataType.NTF_ANGLE, label: 'Angle' }
 ];
 
 const BIO_TYPES: Set<number> = new Set<number>([
@@ -80,12 +83,16 @@ const LIVE_FILTER_TYPES: Set<number> = new Set<number>([
 ]);
 
 const IMU_STREAMS: ImuStreamDef[] = [
-  { type: DataType.NTF_ACC, label: 'ACC', labels: ['ACC-X', 'ACC-Y', 'ACC-Z'], range: [-8, 8] },
-  { type: DataType.NTF_GYRO, label: 'GYRO', labels: ['GYRO-X', 'GYRO-Y', 'GYRO-Z'],
-    range: [-2000, 2000] },
-  { type: DataType.NTF_EULER, label: 'EULER', labels: ['Pitch(Y)', 'Roll(X)', 'Yaw(Z)'],
-    range: [-180, 180] },
-  { type: DataType.NTF_QUATERNION, label: 'QUAT', labels: ['W', 'X', 'Y', 'Z'], range: [-1, 1] }
+  { type: DataType.NTF_ACC, label: 'ACC (g)', labels: ['ACC-X', 'ACC-Y', 'ACC-Z'],
+    range: [-8, 8], unit: 'g' },
+  { type: DataType.NTF_GYRO, label: 'GYRO (dps)', labels: ['GYRO-X', 'GYRO-Y', 'GYRO-Z'],
+    range: [-2000, 2000], unit: 'dps' },
+  { type: DataType.NTF_MAG, label: 'MAG (uT)', labels: ['MAG-X', 'MAG-Y', 'MAG-Z'],
+    range: [], unit: 'uT' },
+  { type: DataType.NTF_EULER, label: 'EULER (deg)', labels: ['Pitch(Y)', 'Roll(X)', 'Yaw(Z)'],
+    range: [-180, 180], unit: 'deg' },
+  { type: DataType.NTF_QUATERNION, label: 'QUAT', labels: ['W', 'X', 'Y', 'Z'],
+    range: [-1, 1], unit: '' }
 ];
 
 const RATE_DEFS: RateDef[] = [
@@ -153,10 +160,6 @@ interface DspFrame {
   waves: Record<string, Float32Array[]>;
   specs: Record<string, SpectrumResult | null>;
   stats: DspStatsPayload;
-}
-
-function isErrorResult(s: string): boolean {
-  return s.toLowerCase().indexOf('error') === 0;
 }
 
 function pad2(v: number): string {
@@ -338,7 +341,7 @@ struct Index {
   private async refreshBackendName(): Promise<void> {
     try {
       const name: string = await this.controller.getParam('BACK_END');
-      if (name.length > 0 && !name.startsWith('Error') && name !== this.backendName) {
+      if (name.length > 0 && name !== this.backendName) {
         this.backendName = name;
         this.refreshDemoTitle();
       }
@@ -448,7 +451,13 @@ struct Index {
     this.devices = this.devices.filter((row: DeviceRow) => row.mac !== mac);
   }
 
-  private onScanStart(): void {
+  private async onScanStart(): Promise<void> {
+    try {
+      await waitForSdkBootstrap();
+    } catch (err) {
+      this.errorLine = 'SDK bootstrap failed';
+      return;
+    }
     this.appLog('User: start scan');
     this.scanning = this.controller.startScan(SCAN_PERIOD_MS);
     if (!this.scanning) {
@@ -496,7 +505,8 @@ struct Index {
     add('SpO2', info.spo2ChannelCount, info.spo2SampleRate);
     add('ACC', info.accChannelCount, info.accSampleRate);
     add('GYRO', info.gyroChannelCount, info.gyroSampleRate);
-    add('Angle', info.magAngleChannelCount, info.magAngleSampleRate);
+    add('Mag', info.magChannelCount, info.magSampleRate);
+    add('Angle', info.angleChannelCount, info.angleSampleRate);
     return parts.join(' | ');
   }
 
@@ -659,7 +669,8 @@ struct Index {
       });
     profile.setOnAutoReconnectListener(
       (p: SensorProfile, hasLastSession: boolean, answer: (takeover: boolean) => void): void => {
-        if (!this.autoReconnect) {
+        if (!this.autoReconnect || !p.autoReconnect) {
+          p.autoReconnect = false;
           answer(false);
           return;
         }
@@ -764,11 +775,19 @@ struct Index {
     this.refreshStatus();
   }
 
-  private async runReadyChain(st: DeviceUiState, restoreParams: boolean): Promise<void> {
+  private shouldCancelAutoRecovery(p: SensorProfile, isAutoRecovery: boolean): boolean {
+    return isAutoRecovery && (!this.autoReconnect || !p.autoReconnect);
+  }
+
+  private async runReadyChain(st: DeviceUiState, restoreParams: boolean,
+    isAutoRecovery: boolean = false): Promise<void> {
     if (st.flowRunning || st.profile === null) {
       return;
     }
     const p: SensorProfile = st.profile;
+    if (this.shouldCancelAutoRecovery(p, isAutoRecovery)) {
+      return;
+    }
     if (st.flowStarted && p.hasInited()) {
       this.refreshStatus();
       return;
@@ -801,7 +820,7 @@ struct Index {
         const logPath: string = this.lastLogPaths.get(st.mac) ?? 'True';
         await p.setParam('DEBUG_LOG_PATH', logPath);
         const currentLog: string = await p.getParam('DEBUG_LOG_PATH');
-        if (currentLog.length > 0 && !isErrorResult(currentLog)) {
+        if (currentLog.length > 0) {
           this.lastLogPaths.set(st.mac, currentLog);
           this.openAlgoCsv(st, currentLog);
         }
@@ -810,7 +829,7 @@ struct Index {
         const dataPath: string = this.lastDataPaths.get(st.mac) ?? 'True';
         await p.setParam('DEBUG_BLE_DATA_PATH', dataPath);
         const currentData: string = await p.getParam('DEBUG_BLE_DATA_PATH');
-        if (currentData.length > 0 && !isErrorResult(currentData)) {
+        if (currentData.length > 0) {
           this.lastDataPaths.set(st.mac, currentData);
         }
       }
@@ -818,9 +837,14 @@ struct Index {
         const history: Map<string, string> | undefined = this.paramHistory.get(st.mac);
         if (history !== undefined) {
           for (const entry of Array.from(history.entries())) {
-            const result: string = await p.setParam(entry[0], entry[1]);
-            this.appLog('App: restore setParam(' + entry[0] + ', ' + entry[1] + ') -> ' + result,
-              'I', st);
+            try {
+              const result: string = await p.setParam(entry[0], entry[1]);
+              this.appLog('App: restore setParam(' + entry[0] + ', ' + entry[1] + ') -> ' + result,
+                'I', st);
+            } catch (err) {
+              this.appLog('App: restore setParam(' + entry[0] + ', ' + entry[1] + ') failed: ' +
+                (err as Error).message, 'E', st);
+            }
           }
         }
       }
@@ -836,7 +860,7 @@ struct Index {
         this.errorLine = '';
         this.refreshStatus();
         this.refreshAllLines();
-        this.syncPanel();
+        await this.syncPanel();
       }
     } finally {
       st.flowRunning = false;
@@ -856,12 +880,16 @@ struct Index {
 
   private async recoverSession(st: DeviceUiState, hasLastSession: boolean): Promise<void> {
     const p: SensorProfile = st.profile as SensorProfile;
+    if (this.shouldCancelAutoRecovery(p, true)) {
+      p.autoReconnect = false;
+      return;
+    }
     this.currentMac = st.mac;
     const connected: boolean = await p.connect();
     if (!connected) {
       return;
     }
-    await this.runReadyChain(st, hasLastSession);
+    await this.runReadyChain(st, hasLastSession, true);
   }
 
   private recordParam(mac: string, key: string, value: string): void {
@@ -938,11 +966,9 @@ struct Index {
   private onAutoReconnectToggle(isOn: boolean): void {
     this.appLog('User: auto reconnect ' + (isOn ? 'ON' : 'OFF'));
     this.autoReconnect = isOn;
-    this.states.forEach((st: DeviceUiState): void => {
-      if (st.profile !== null) {
-        st.profile.autoReconnect = isOn;
-      }
-    });
+    for (const profile of this.controller.getSensors()) {
+      profile.autoReconnect = isOn;
+    }
   }
 
   // ---- debug toggles ----
@@ -955,49 +981,67 @@ struct Index {
       this.controller.getVersion().replace(/\./g, '_');
   }
 
+  private async setProfileParam(st: DeviceUiState, profile: SensorProfile, key: string,
+    value: string): Promise<[string, string]> {
+    try {
+      const result: string = await profile.setParam(key, value);
+      this.appLog('App: setParam(' + key + ', ' + value + ') -> ' + result, 'I', st);
+      return [result, ''];
+    } catch (err) {
+      const error: string = (err as Error).message;
+      this.appLog('App: setParam(' + key + ', ' + value + ') failed: ' + error, 'E', st);
+      return ['', error];
+    }
+  }
+
   private async onDebugLogToggle(enabled: boolean): Promise<void> {
     this.appLog('User: SDK debug log ' + (enabled ? 'ON' : 'OFF'));
     this.debugLogEnabled = enabled;
-    if (enabled) {
-      await this.controller.setParam('LOG_PATH', this.sessionLogDir());
-    } else {
-      await this.controller.setParam('LOG_PATH', 'False');
+    try {
+      if (enabled) {
+        await this.controller.setParam('LOG_PATH', this.sessionLogDir());
+      } else {
+        await this.controller.setParam('LOG_PATH', 'False');
+      }
+      await this.controller.setParam('DEBUG_ENABLED', enabled ? 'True' : 'False');
+    } catch (err) {
+      this.errorLine = 'debug log setting failed: ' + (err as Error).message;
+      return;
     }
-    await this.controller.setParam('DEBUG_ENABLED', enabled ? 'True' : 'False');
     const value: string = enabled ? 'True' : 'False';
+    const tasks: Promise<[string, string]>[] = [];
     this.states.forEach((st: DeviceUiState): void => {
       if (st.profile !== null && st.profile.isReady() && st.profile.hasInited()) {
-        st.profile.setParam('DEBUG_LOG_PATH', value).then((result: string): void => {
-          if (st.profile !== null) {
-            st.profile.log('App: setParam(DEBUG_LOG_PATH, ' + value + ') -> ' + result, 'I');
-          }
-        });
+        tasks.push(this.setProfileParam(st, st.profile, 'DEBUG_LOG_PATH', value));
       }
     });
+    await Promise.all(tasks);
   }
 
-  private onBinDataToggle(enabled: boolean): void {
+  private async onBinDataToggle(enabled: boolean): Promise<void> {
     this.appLog('User: data debug log ' + (enabled ? 'ON' : 'OFF'));
     this.binDataEnabled = enabled;
     const value: string = enabled ? 'True' : 'False';
+    const tasks: Promise<[string, string]>[] = [];
     this.states.forEach((st: DeviceUiState): void => {
       if (st.profile !== null && st.profile.isReady() && st.profile.hasInited()) {
-        st.profile.setParam('DEBUG_BLE_DATA_PATH', value).then((result: string): void => {
-          if (st.profile !== null) {
-            st.profile.log('App: setParam(DEBUG_BLE_DATA_PATH, ' + value + ') -> ' + result, 'I');
-          }
-        });
+        tasks.push(this.setProfileParam(st, st.profile, 'DEBUG_BLE_DATA_PATH', value));
       }
     });
+    await Promise.all(tasks);
   }
 
-  private onTranslateImuToggle(enabled: boolean): void {
+  private async onTranslateImuToggle(enabled: boolean): Promise<void> {
     this.appLog('User: translate IMU ' + (enabled ? 'ON' : 'OFF'));
     this.translateImu = enabled;
     const value: string = enabled ? 'True' : 'False';
-    this.controller.setParam('TRANSLATE_IMU', value).then((result: string): void => {
+    try {
+      const result: string = await this.controller.setParam('TRANSLATE_IMU', value);
       this.appLog('App: setParam(TRANSLATE_IMU, ' + value + ') -> ' + result);
-    });
+    } catch (err) {
+      this.appLog('App: setParam(TRANSLATE_IMU, ' + value + ') failed: ' + (err as Error).message,
+        'E');
+    }
   }
 
   // ---- NTF / FILTER switches ----
@@ -1027,17 +1071,19 @@ struct Index {
         return info.spo2ChannelCount;
       case 'NTF_IMU':
         return info.accChannelCount + info.gyroChannelCount;
-      case 'NTF_MAG_ANGLE':
-        return info.magAngleChannelCount;
+      case 'NTF_ANGLE':
+        return info.angleChannelCount;
       default:
         return 0;
     }
   }
 
-  private syncPanel(): void {
-    this.syncNtfSwitches();
-    this.syncFilterSwitches();
-    this.syncRateGroups();
+  private async syncPanel(): Promise<void> {
+    await Promise.all([
+      this.syncNtfSwitches(),
+      this.syncFilterSwitches(),
+      this.syncRateGroups()
+    ]);
   }
 
   private async syncNtfSwitches(): Promise<void> {
@@ -1045,8 +1091,10 @@ struct Index {
     if (st === null || st.profile === null) {
       return;
     }
-    const result: string = await st.profile.getParam('NTF');
-    if (isErrorResult(result)) {
+    let result: string;
+    try {
+      result = await st.profile.getParam('NTF');
+    } catch (err) {
       return;
     }
     const items: NtfItem[] = [];
@@ -1071,8 +1119,10 @@ struct Index {
     if (st === null || st.profile === null) {
       return;
     }
-    const result: string = await st.profile.getParam('FILTER');
-    if (isErrorResult(result)) {
+    let result: string;
+    try {
+      result = await st.profile.getParam('FILTER');
+    } catch (err) {
       this.filterSupported = false;
       return;
     }
@@ -1102,23 +1152,23 @@ struct Index {
   private async onParamToggle(key: string, isOn: boolean, isFilter: boolean): Promise<void> {
     const st: DeviceUiState | null = this.currentState();
     if (st === null || st.profile === null) {
-      this.syncPanel();
+      await this.syncPanel();
       return;
     }
     const value: string = isOn ? 'ON' : 'OFF';
-    const result: string = await st.profile.setParam(key, value);
-    this.appLog('User: setParam(' + key + ', ' + value + ') -> ' + result, 'I', st);
-    if (isErrorResult(result)) {
-      this.errorLine = 'setParam ' + key + ' failed: ' + result;
-    } else {
+    try {
+      const result: string = await st.profile.setParam(key, value);
+      this.appLog('User: setParam(' + key + ', ' + value + ') -> ' + result, 'I', st);
       this.errorLine = '';
       this.recordParam(st.mac, key, value);
       this.clearBuffers(st);
+    } catch (err) {
+      this.errorLine = 'setParam ' + key + ' failed: ' + (err as Error).message;
     }
     if (isFilter) {
-      this.syncFilterSwitches();
+      await this.syncFilterSwitches();
     } else {
-      this.syncNtfSwitches();
+      await this.syncNtfSwitches();
     }
   }
 
@@ -1146,8 +1196,13 @@ struct Index {
     }
     const groups: RateGroup[] = [];
     for (const def of RATE_DEFS) {
-      const list: string = await st.profile.getParam(def.key + '_LIST');
-      if (list.length === 0 || isErrorResult(list)) {
+      let list: string;
+      try {
+        list = await st.profile.getParam(def.key + '_LIST');
+      } catch (err) {
+        continue;
+      }
+      if (list.length === 0) {
         continue;
       }
       const options: number[] = [];
@@ -1165,7 +1220,11 @@ struct Index {
       group.key = def.key;
       group.label = def.label;
       group.usable = usable;
-      const current: string = await st.profile.getParam(def.key);
+      let current: string = '';
+      try {
+        current = await st.profile.getParam(def.key);
+      } catch (err) {
+      }
       const parsed: number = parseInt(current, 10);
       group.current = isNaN(parsed) ? 0 : parsed;
       groups.push(group);
@@ -1183,16 +1242,16 @@ struct Index {
     }
     group.current = rate;
     this.rateGroups = this.rateGroups.slice();
-    const result: string = await st.profile.setParam(group.key, rate.toString());
-    this.appLog('User: setParam(' + group.key + ', ' + rate.toString() + ') -> ' + result, 'I', st);
-    if (isErrorResult(result)) {
-      this.errorLine = 'setParam ' + group.key + ' failed: ' + result;
-    } else {
+    try {
+      const result: string = await st.profile.setParam(group.key, rate.toString());
+      this.appLog('User: setParam(' + group.key + ', ' + rate.toString() + ') -> ' + result, 'I', st);
       this.errorLine = '';
       this.recordParam(st.mac, group.key, rate.toString());
       this.clearBuffers(st);
+    } catch (err) {
+      this.errorLine = 'setParam ' + group.key + ' failed: ' + (err as Error).message;
     }
-    this.syncRateGroups();
+    await this.syncRateGroups();
   }
 
   // ---- live filter band ----
@@ -1593,8 +1652,7 @@ struct Index {
   }
 
   private openAlgoCsv(st: DeviceUiState, deviceLogPath: string): void {
-    if (deviceLogPath.length === 0 || isErrorResult(deviceLogPath) || deviceLogPath === 'True' ||
-      deviceLogPath === 'False') {
+    if (deviceLogPath.length === 0 || deviceLogPath === 'True' || deviceLogPath === 'False') {
       return;
     }
     const slash: number = deviceLogPath.lastIndexOf('/');
@@ -1639,7 +1697,7 @@ struct Index {
       buf = new RingBuffer();
       st.buffers.set(type, buf);
     }
-    const seconds: number = BIO_TYPES.has(type) || type === DataType.NTF_MAG_ANGLE ? 1.0 : 5.0;
+    const seconds: number = BIO_TYPES.has(type) || type === DataType.NTF_ANGLE ? 1.0 : 5.0;
     buf.ensureSize(values.length, sampleRate * seconds);
     buf.appendBatch(values);
   }
@@ -1781,14 +1839,14 @@ struct Index {
     return [kohm.toFixed(2) + ' KOhm', color];
   }
 
-  private hasMagAngle(st: DeviceUiState): boolean {
-    if (st.info !== null && st.info.magAngleChannelCount > 0) {
+  private hasAngle(st: DeviceUiState): boolean {
+    if (st.info !== null && st.info.angleChannelCount > 0) {
       return true;
     }
     if (st.workletActive) {
-      return st.dspChannels.has(DataType.NTF_MAG_ANGLE);
+      return st.dspChannels.has(DataType.NTF_ANGLE);
     }
-    return st.buffers.has(DataType.NTF_MAG_ANGLE);
+    return st.buffers.has(DataType.NTF_ANGLE);
   }
 
   private computeBioPlots(st: DeviceUiState): BioPlot[] {
@@ -1800,49 +1858,49 @@ struct Index {
     if (info !== null && info.ppgChannelCount > 0) {
       plots.push({ title: 'RELAX', type: RELAX_PLOT_TYPE, channel: 0, spectrum: false,
         range: [], impedance: false });
-      plots.push({ title: 'fp1', type: DataType.NTF_EEG, channel: 0, spectrum: true,
+      plots.push({ title: 'fp1 (uV)', type: DataType.NTF_EEG, channel: 0, spectrum: true,
         range: [], impedance: true });
-      plots.push({ title: 'fp2', type: DataType.NTF_EEG, channel: 1, spectrum: true,
+      plots.push({ title: 'fp2 (uV)', type: DataType.NTF_EEG, channel: 1, spectrum: true,
         range: [], impedance: true });
       plots.push({ title: 'red_led', type: DataType.NTF_PPG, channel: 0, spectrum: true,
         range: [], impedance: true });
       plots.push({ title: 'ir_led', type: DataType.NTF_PPG, channel: 1, spectrum: true,
         range: [], impedance: true });
-      plots.push({ title: 'spo2', type: DataType.NTF_SPO2, channel: 0, spectrum: false,
+      plots.push({ title: 'spo2 (%)', type: DataType.NTF_SPO2, channel: 0, spectrum: false,
         range: [], impedance: true });
-      plots.push({ title: 'heart_rate', type: DataType.NTF_SPO2, channel: 1, spectrum: false,
+      plots.push({ title: 'heart_rate (bpm)', type: DataType.NTF_SPO2, channel: 1, spectrum: false,
         range: [], impedance: true });
       return plots;
     }
     if (info !== null && info.eegChannelCount > 0) {
       const hasECG: boolean = info.ecgChannelCount > 0;
       const hasBRTH: boolean = info.brthChannelCount > 0;
-      const hasMag: boolean = this.hasMagAngle(st);
-      const perPage: number = 8 - (hasECG ? 1 : 0) - (hasBRTH ? 1 : 0) - (hasMag ? 1 : 0);
+      const hasAngle: boolean = this.hasAngle(st);
+      const perPage: number = 8 - (hasECG ? 1 : 0) - (hasBRTH ? 1 : 0) - (hasAngle ? 1 : 0);
       const pages: number = Math.max(1, Math.ceil(info.eegChannelCount / perPage));
       const page: number = Math.min(st.eegPage, pages - 1);
       const start: number = page * perPage;
       for (let i = start; i < Math.min(start + perPage, info.eegChannelCount); i++) {
-        plots.push({ title: 'EEG-' + (i + 1).toString(), type: DataType.NTF_EEG, channel: i,
-          spectrum: true, range: [], impedance: true });
+        plots.push({ title: 'EEG-' + (i + 1).toString() + ' (uV)', type: DataType.NTF_EEG,
+          channel: i, spectrum: true, range: [], impedance: true });
       }
       if (page === pages - 1) {
-        if (hasMag) {
-          plots.push({ title: 'Angle', type: DataType.NTF_MAG_ANGLE, channel: 0, spectrum: true,
+        if (hasAngle) {
+          plots.push({ title: 'Angle (deg)', type: DataType.NTF_ANGLE, channel: 0, spectrum: true,
             range: [0, 180], impedance: false });
         }
         if (hasECG) {
-          plots.push({ title: 'ECG', type: DataType.NTF_ECG, channel: 0, spectrum: true,
+          plots.push({ title: 'ECG (uV)', type: DataType.NTF_ECG, channel: 0, spectrum: true,
             range: [], impedance: true });
         }
         if (hasBRTH) {
-          plots.push({ title: 'BRTH', type: DataType.NTF_BRTH, channel: 0, spectrum: false,
+          plots.push({ title: 'BRTH (uV)', type: DataType.NTF_BRTH, channel: 0, spectrum: false,
             range: [], impedance: true });
         }
       }
       return plots;
     }
-    const hasMag: boolean = this.hasMagAngle(st);
+    const hasAngle: boolean = this.hasAngle(st);
     let count: number = info !== null ? info.emgChannelCount : 0;
     if (count <= 0) {
       if (st.workletActive) {
@@ -1857,13 +1915,13 @@ struct Index {
         }
       }
     }
-    const emgRows: number = Math.min(hasMag ? MAX_BIO_ROWS - 1 : MAX_BIO_ROWS, count);
+    const emgRows: number = Math.min(hasAngle ? MAX_BIO_ROWS - 1 : MAX_BIO_ROWS, count);
     for (let i = 0; i < emgRows; i++) {
-      plots.push({ title: 'EMG-' + (i + 1).toString(), type: DataType.NTF_EMG, channel: i,
-        spectrum: true, range: [], impedance: true });
+      plots.push({ title: 'EMG-' + (i + 1).toString() + ' (uV)', type: DataType.NTF_EMG,
+        channel: i, spectrum: true, range: [], impedance: true });
     }
-    if (hasMag) {
-      plots.push({ title: 'Angle', type: DataType.NTF_MAG_ANGLE, channel: 0, spectrum: true,
+    if (hasAngle) {
+      plots.push({ title: 'Angle (deg)', type: DataType.NTF_ANGLE, channel: 0, spectrum: true,
         range: [0, 180], impedance: false });
     }
     return plots;
@@ -1876,8 +1934,8 @@ struct Index {
     }
     const hasECG: boolean = info.ecgChannelCount > 0;
     const hasBRTH: boolean = info.brthChannelCount > 0;
-    const hasMag: boolean = info.magAngleChannelCount > 0;
-    const perPage: number = 8 - (hasECG ? 1 : 0) - (hasBRTH ? 1 : 0) - (hasMag ? 1 : 0);
+    const hasAngle: boolean = info.angleChannelCount > 0;
+    const perPage: number = 8 - (hasECG ? 1 : 0) - (hasBRTH ? 1 : 0) - (hasAngle ? 1 : 0);
     return Math.max(1, Math.ceil(info.eegChannelCount / perPage));
   }
 
@@ -1954,7 +2012,7 @@ struct Index {
       const side: string[] = plot.impedance && st.impedanceEnabled ?
         this.impedanceSide(st, plot.channel) : ['', ''];
       const pin: number =
-        plot.type === DataType.NTF_MAG_ANGLE || plot.type === RELAX_PLOT_TYPE ? r : plot.channel;
+        plot.type === DataType.NTF_ANGLE || plot.type === RELAX_PLOT_TYPE ? r : plot.channel;
       let channelData: Float32Array = new Float32Array(0);
       if (plot.type === RELAX_PLOT_TYPE) {
         if (st.workletActive) {
@@ -2062,7 +2120,8 @@ struct Index {
             }
           }
         }
-        parts.push(def.labels[c] + ': ' + (v >= 0 ? '+' : '') + v.toFixed(4));
+        parts.push(def.labels[c] + ': ' + (v >= 0 ? '+' : '') + v.toFixed(4) +
+          (def.unit.length > 0 ? ' ' + def.unit : ''));
       }
       valueLines.push(def.label + ': ' + parts.join('   '));
     }

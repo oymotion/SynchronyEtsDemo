@@ -21,6 +21,12 @@ function sessionTimestamp(): string {
     pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds());
 }
 
+let sdkBootstrap: Promise<void> = Promise.resolve();
+
+export function waitForSdkBootstrap(): Promise<void> {
+  return sdkBootstrap;
+}
+
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     try {
@@ -29,13 +35,25 @@ export default class EntryAbility extends UIAbility {
       hilog.warn(DOMAIN, TAG, 'setColorMode unsupported on this device');
     }
     this.requestBlePermission();
+    sdkBootstrap = this.bootstrap();
+    sdkBootstrap.catch((err: BusinessError): void => {
+      hilog.error(DOMAIN, TAG, 'SDK bootstrap failed: %{public}s', err.message);
+    });
+  }
+
+  private async setBootstrapParam(controller: SensorController, key: string, value: string): Promise<void> {
+    await controller.setParam(key, value);
+  }
+
+  private async bootstrap(): Promise<void> {
     const controller: SensorController = SensorController.getInstance();
     const sessionDir: string = this.context.filesDir + '/sensorsdklog/' + sessionTimestamp() + '_' +
       controller.getVersion().replace(/\./g, '_');
     hilog.info(DOMAIN, TAG, 'LOG_PATH: %{public}s', sessionDir);
-    controller.setParam('LOG_PATH', sessionDir);
-    controller.setParam('DEBUG_ENABLED', 'True');
-    controller.setParam('TRANSLATE_IMU', 'False');
+    await this.setBootstrapParam(controller, 'LOG_PATH', sessionDir);
+    await this.setBootstrapParam(controller, 'DEBUG_ENABLED', 'True');
+    await this.setBootstrapParam(controller, 'TRANSLATE_IMU', 'False');
+    await this.setBootstrapParam(controller, 'BLE_TRACE_ENABLED', 'True');
     setBridge(this.context.filesDir);
   }
 

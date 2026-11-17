@@ -7,8 +7,7 @@ OYMotion Sensor SDK for HarmonyOS (ArkTS), plus an ArkTS demo app.
 OYMotion SDK is the software development kit for developers to access OYMotion
 products. This project shows how to use the HarmonyOS binding (`sensor`,
 an ArkTS Promise-style API over the C++ core) from an ArkTS app: scan,
-connect, configure and stream EEG/ECG/EMG/IMU/PPG/SpO2 data, run the
-streaming algorithms (EEG relax index, PPG heart rate / SpO2), and replay
+connect, configure and stream EEG/ECG/EMG/IMU/PPG/SpO2 data, and replay
 recorded bin files offline.
 
 ## Installation
@@ -358,48 +357,6 @@ await profile.getParam('IMU_SAMPLE_RATE_LIST');
 await profile.getParam('PPG_SAMPLE_RATE');
 await profile.getParam('PPG_SAMPLE_RATE_LIST');
 ```
-
-## Streaming algorithms (SensorAlgo)
-
-`SensorAlgo` is the streaming-algorithm controller (Promise-based like the
-rest of the surface; one instance per device, algorithms run on the SDK's
-internal worker thread). Feed it the `SensorData` batches straight from
-`onData` — `NTF_EEG` views feed the EEG relax algorithm, `NTF_PPG` views
-the heart-rate / SpO2 algorithm, `NTF_IMU` views are optional motion input;
-other types are ignored.
-
-```ts
-import { SensorAlgo } from 'sensor';
-
-const algo = new SensorAlgo();
-await algo.init();                        // Promise<boolean>
-algo.hasInit();                           // synchronous
-
-// per-update result cadence: one snapshot per 1 s of consumed samples
-await algo.setParam('EEG_REFRESH_RATE', '1');
-
-profile.setOnDataListener((p, dataList) => {
-  algo.pushSamples(dataList);             // pass 'CLONE' as the second
-                                          // argument for batches kept past
-                                          // the callback
-});
-
-// answers "STEP|TIMESTAMP|VALID|RELAX|CONCENTRATE|POSITION"
-const result = await algo.getResult('NO_HEADER');
-```
-
-`setParam` / `getParam` keys: `CLONE` ("True"/"False" batch storage mode),
-`EEG_SAMPLE_RATE` (250/500/1000) / `PPG_SAMPLE_RATE` (100) /
-`IMU_SAMPLE_RATE` and their `*_LIST` readbacks, `EEG_REFRESH_RATE` /
-`PPG_REFRESH_RATE`. `reset()` restarts the algorithms with fresh state
-(params unchanged), `destroy()` releases the instance.
-`SensorAlgo.algoCapiVersion()` (static) reports the algorithm API version.
-
-The demo's Bio page uses this for the RELAX plot row in PPG mode: each
-device's `onData` batches (or the worker-side batches while Use Worker is
-bound — the worker then hosts its own `SensorAlgo`) are pushed into the
-device's `SensorAlgo`, and a 1 Hz `getResult('NO_HEADER')` chain draws the
-RELAX value on the snapshot timestamp's time grid.
 
 ## Bin file recording and replay
 

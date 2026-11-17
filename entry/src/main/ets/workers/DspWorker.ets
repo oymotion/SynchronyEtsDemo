@@ -14,7 +14,7 @@ const BIO_TYPES: Set<number> = new Set<number>([
 const LIVE_FILTER_TYPES: Set<number> = BIO_TYPES;
 const DISPLAY_TYPES: Set<number> = new Set<number>([
   DataType.NTF_EMG, DataType.NTF_EEG, DataType.NTF_ECG, DataType.NTF_BRTH,
-  DataType.NTF_PPG, DataType.NTF_SPO2, DataType.NTF_MAG_ANGLE, DataType.NTF_IMU,
+  DataType.NTF_PPG, DataType.NTF_SPO2, DataType.NTF_ANGLE, DataType.NTF_IMU,
   DataType.NTF_ACC, DataType.NTF_GYRO, DataType.NTF_EULER, DataType.NTF_QUATERNION
 ]);
 
@@ -281,7 +281,7 @@ function appendToBuffer(type: number, values: Float32Array[], sampleRate: number
     buf = new RingBuffer();
     buffers.set(type, buf);
   }
-  const seconds: number = BIO_TYPES.has(type) || type === DataType.NTF_MAG_ANGLE ? 1.0 : 5.0;
+  const seconds: number = BIO_TYPES.has(type) || type === DataType.NTF_ANGLE ? 1.0 : 5.0;
   buf.ensureSize(values.length, sampleRate * seconds);
   buf.appendBatch(values);
   rates.set(type, sampleRate);
@@ -355,7 +355,7 @@ function emitFrame(): void {
       const channels: Float32Array[] = buf.getAllChannels();
       waves[type.toString()] = channels;
       const rate: number = rates.get(type) ?? 0;
-      if (BIO_TYPES.has(type) || type === DataType.NTF_MAG_ANGLE) {
+      if (BIO_TYPES.has(type) || type === DataType.NTF_ANGLE) {
         for (let ch = 0; ch < buf.channelCount; ch++) {
           spectrumFor('bio:' + type.toString() + ':' + ch.toString(), [channels[ch]], rate, now);
         }
@@ -422,18 +422,22 @@ port.onmessage = (e: MessageEvents): void => {
     }
     const seq: number = ++algoBindSeq;
     const newAlgo: SensorAlgo = new SensorAlgo();
-    newAlgo.init().then((ok: boolean): void => {
-      if (seq !== algoBindSeq) {
+    newAlgo.init().then(async (ok: boolean): Promise<void> => {
+      if (seq !== algoBindSeq || !ok) {
         newAlgo.destroy();
         return;
       }
-      if (!ok) {
+      try {
+        await newAlgo.setParam('CLONE', 'False');
+        await newAlgo.setParam('EEG_REFRESH_RATE', '1');
+        if (seq !== algoBindSeq) {
+          newAlgo.destroy();
+          return;
+        }
+        algo = newAlgo;
+      } catch (err) {
         newAlgo.destroy();
-        return;
       }
-      newAlgo.setParam('CLONE', 'False');
-      newAlgo.setParam('EEG_REFRESH_RATE', '1');
-      algo = newAlgo;
     });
     const profile: SensorProfile = new SensorProfile(BigInt((msg as BindMessage).handle), true);
     boundProfile = profile;
